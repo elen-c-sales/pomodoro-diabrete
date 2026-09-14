@@ -5,7 +5,8 @@ import threading
 
 
 class PomodoroTimer:
-    def __init__(self):
+    def __init__(self, duration=25 * 60):
+        self.duration = duration  # Total duration in seconds
         self.root = tk.Tk()
         self.root.title("Pomodoro")
         self.root.overrideredirect(True)  # Remove decorations (frameless)
@@ -29,7 +30,7 @@ class PomodoroTimer:
         self.root.bind("<Leave>", self.on_leave)
 
         # Timer label
-        self.remaining = 25 * 60  # 25 minutes in seconds
+        self.remaining = self.duration  # Start countdown from duration
         self.running = False
 
         self.label = tk.Label(
@@ -41,9 +42,9 @@ class PomodoroTimer:
         )
         self.label.pack(expand=True, fill="both")
 
-        # Click to start/pause, right-click to reset
+        # Click to start/pause, right-click for context menu
         self.label.bind("<Button-1>", self.toggle_timer)
-        self.label.bind("<Button-3>", self.reset_timer)
+        self.label.bind("<Button-3>", self.show_context_menu)
 
         # Idle (original) colors
         self.idle_bg = "#2d2d2d"
@@ -55,9 +56,19 @@ class PomodoroTimer:
         self.start_move_data = None
         self.alert_active = False
 
+        # Right-click context menu
+        self.menu = tk.Menu(self.root, tearoff=0)
+        self.menu.add_command(label="Iniciar / Pausar", command=self.toggle_timer)
+        self.menu.add_command(label="Reset", command=self.reset_timer)
+        self.menu.add_separator()
+        self.menu.add_command(label="Sair", command=self.root.quit)
+
     def format_time(self, seconds):
         m, s = divmod(seconds, 60)
         return f"{m:02d}:{s:02d}"
+
+    def show_context_menu(self, event):
+        self.menu.post(event.x_root, event.y_root)
 
     def toggle_timer(self, event=None):
         if self.running:
@@ -69,7 +80,7 @@ class PomodoroTimer:
     def reset_timer(self, event=None):
         self.running = False
         self.stop_alert()  # Stop animation if active
-        self.remaining = 25 * 60
+        self.remaining = self.duration
         self.label.config(text=self.format_time(self.remaining),
                           bg=self.idle_bg, fg=self.idle_fg)
 
@@ -157,5 +168,10 @@ class PomodoroTimer:
 
 
 if __name__ == "__main__":
-    app = PomodoroTimer()
+    import sys
+    demo = "--demo" in sys.argv
+    duration = 5 if demo else 25 * 60
+    app = PomodoroTimer(duration=duration)
+    if demo:
+        app.root.after(500, app.toggle_timer)  # Auto-start after 500ms
     app.run()

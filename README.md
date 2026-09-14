@@ -10,7 +10,7 @@ Timer Pomodoro minimalista em Python com Tkinter. Janela flutuante, sem bordas, 
 - Efeito de **hover**: muda cor para verde ao passar o mouse
 - **Arrastável**: clique e arraste para mover
 - **Animação de alerta**: flash vermelho + janela treme ao chegar em 00:00
-- **Reset**: clique direito para reiniciar
+- **Menu de contexto**: clique direito para acessar opções
 
 ## Como executar
 
@@ -18,15 +18,36 @@ Timer Pomodoro minimalista em Python com Tkinter. Janela flutuante, sem bordas, 
 python pomodoro.py
 ```
 
+### Modo demo (timer de 5 segundos)
+
+```bash
+python pomodoro.py --demo
+```
+
 ## Controles
 
 | Ação | Botão |
 |------|-------|
 | Iniciar / Pausar | Clique esquerdo |
-| Resetar | Clique direito |
+| Menu de contexto | Clique direito |
 | Mover janela | Arrastar com botão esquerdo |
+
+### Menu de contexto (clique direito)
+
+| Opção | Ação |
+|-------|------|
+| Iniciar / Pausar | Alterna entre iniciar e pausar o timer |
+| Reset | Reinicia o timer para 25:00 |
+| Sair | Fecha a aplicação |
 
 ## Requisitos
 
 - Python 3.x
 - Tkinter (incluído na instalação padrão do Python)
+
+## Testes
+
+```bash
+pip install pytest
+pytest tests/ -v
+```
