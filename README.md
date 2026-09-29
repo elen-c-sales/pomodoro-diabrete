@@ -24,7 +24,7 @@ A transição é suave (`REVEAL_SPEED`) e disparada por `pygame.mouse.get_focuse
 - [Modo overlay](#modo-overlay)
 - [Como funciona](#como-funciona)
   - [Ciclo de fases](#ciclo-de-fases)
-  - [Máquina de estados](#máquina-de-estados)
+  - [Diagrama de estados](#diagrama-de-estados)
   - [Modelo de energia](#modelo-de-energia)
   - [Humor e expressões](#humor-e-expressões)
   - [Animações](#animações)
@@ -75,34 +75,35 @@ FOCO --(tempo acaba)--> aguardando --(usuário marca a pausa)--> PAUSA (comemora
 
 A cada FOCO concluído, um **ciclo** é contabilizado (exibido como bolinhas verdes).
 
-### Máquina de estados
+### Diagrama de estados
 
 Estados definidos por `phase` (`FOCUS`/`BREAK`), `running` (rodando/pausado) e `awaiting` (aguardando ação):
 
-```
-                       reset()
-                         |
-                         v
-            +--------------------------+
-            |  FOCUS  (running)        |   energia cai
-            +--------------------------+
-                         |  tick() -> FOCUS_DONE
-                         v
-            +--------------------------+
-            |  FOCUS  (awaiting)       |   00:00, alerta "!"
-            +--------------------------+
-                         |  advance() / toggle() -> BREAK_STARTED
-                         v
-            +--------------------------+
-            |  BREAK  (running)        |   energia sobe (+ animação de alegria)
-            +--------------------------+
-                         |  tick() -> BREAK_DONE
-                         v
-            +--------------------------+
-            |  BREAK  (awaiting)       |   recuperado, espera novo foco
-            +--------------------------+
-                         |  advance() / toggle() -> FOCUS_STARTED
-                         +--> (volta para FOCUS running)
+```mermaid
+stateDiagram-v2
+    state "FOCO (rodando)" as FOCUS_RUN
+    state "FOCO (aguardando)" as FOCUS_AWAIT
+    state "PAUSA (rodando)" as BREAK_RUN
+    state "PAUSA (aguardando)" as BREAK_AWAIT
+
+    [*] --> FOCUS_RUN: reset()
+    FOCUS_RUN --> FOCUS_AWAIT: tick() → FOCUS_DONE
+    FOCUS_AWAIT --> BREAK_RUN: advance() / toggle() → BREAK_STARTED
+    BREAK_RUN --> BREAK_AWAIT: tick() → BREAK_DONE
+    BREAK_AWAIT --> FOCUS_RUN: advance() / toggle() → FOCUS_STARTED
+
+    note right of FOCUS_RUN
+        energia cai
+    end note
+    note right of FOCUS_AWAIT
+        00:00, alerta "!"
+    end note
+    note right of BREAK_RUN
+        energia sobe (+ animação de alegria)
+    end note
+    note right of BREAK_AWAIT
+        recuperado, espera novo foco
+    end note
 ```
 
 Regras:
