@@ -1,164 +1,165 @@
-import sys
+"""Smoke tests do app Pygame rodando headless (driver de video dummy)."""
+
+import os
+
+os.environ["SDL_VIDEODRIVER"] = "dummy"
+os.environ["SDL_AUDIODRIVER"] = "dummy"
+
 import pytest
-from unittest.mock import MagicMock, patch, call
 
-
-# Mock tkinter before importing the module
-@pytest.fixture(autouse=True)
-def mock_tkinter():
-    """Mock tkinter to avoid opening a real window during tests."""
-    with patch.dict("sys.modules", {
-        "tkinter": MagicMock(),
-        "tkinter.font": MagicMock(),
-    }):
-        # Need to reimport after mocking
-        if "pomodoro" in sys.modules:
-            del sys.modules["pomodoro"]
-        yield
+from pet import FOCUS, BREAK
+from pomodoro import PetWindow, energy_color, clamp, mix, shade
 
 
 @pytest.fixture
-def timer():
-    """Create a PomodoroTimer with a short duration for testing."""
-    from pomodoro import PomodoroTimer
-    t = PomodoroTimer(duration=10)  # 10 seconds for fast tests
-    return t
+def window():
+    w = PetWindow(focus_duration=2, break_duration=1)
+    yield w
+    w.running = False
 
 
-# --- format_time tests ---
-class TestFormatTime:
-    def test_zero(self, timer):
-        assert timer.format_time(0) == "00:00"
+class TestHelpers:
+    def test_clamp(self):
+        assert clamp(5, 0, 10) == 5
+        assert clamp(-1, 0, 10) == 0
+        assert clamp(99, 0, 10) == 10
 
-    def test_seconds_only(self, timer):
-        assert timer.format_time(45) == "00:45"
+    def test_mix(self):
+        assert mix((0, 0, 0), (10, 20, 30), 0.5) == (5, 10, 15)
 
-    def test_minutes_only(self, timer):
-        assert timer.format_time(120) == "02:00"
+    def test_shade(self):
+        assert shade((100, 100, 100), 0.5) == (50, 50, 50)
 
-    def test_minutes_and_seconds(self, timer):
-        assert timer.format_time(90) == "01:30"
-
-    def test_full_hour(self, timer):
-        assert timer.format_time(3600) == "60:00"
-
-    def test_25_minutes(self, timer):
-        assert timer.format_time(25 * 60) == "25:00"
+    def test_energy_color_greener_when_full(self):
+        assert energy_color(100)[1] > energy_color(0)[1]
 
 
-# --- Timer state tests ---
-class TestTimerState:
-    def test_initial_state(self, timer):
-        assert timer.remaining == 10
-        assert timer.running is False
-        assert timer.alert_active is False
+class TestExpression:
+    def test_starts_focused(self, window):
+        assert window._expression() == "focus"
 
-    def test_toggle_start(self, timer):
-        timer.toggle_timer()
-        assert timer.running is True
+    def test_tired_and_exhausted(self, window):
+        window.pet.energy = 30
+        assert window._expression() == "tired"
+        window.pet.energy = 10
+        assert window._expression() == "exhausted"
 
-    def test_toggle_pause(self, timer):
-        timer.toggle_timer()  # start
-        timer.toggle_timer()  # pause
-        assert timer.running is False
+    def test_resting_during_break(self, window):
+        window.pet.skip()
+        window.pet.advance()
+        window.pet.energy = 50
+        assert window._expression() == "resting"
 
-    def test_reset(self, timer):
-        timer.remaining = 3
-        timer.reset_timer()
-        assert timer.remaining == 10
-        assert timer.running is False
-
-
-# --- Countdown tests ---
-class TestCountdown:
-    def test_countdown_decrements(self, timer):
-        timer.running = True
-        timer.countdown()
-        assert timer.remaining == 9
-
-    def test_countdown_stops_when_paused(self, timer):
-        timer.running = False
-        timer.countdown()
-        assert timer.remaining == 10  # unchanged
-
-    def test_countdown_triggers_alert_at_zero(self, timer):
-        timer.remaining = 1
-        timer.running = True
-        timer.countdown()  # remaining goes to 0, schedules next call
-        assert timer.remaining == 0
-        # Alert triggers on the next scheduled call when remaining == 0
-        timer.countdown()
-        assert timer.running is False
-        assert timer.alert_active is True
+    def test_wakes_up_recovered(self, window):
+        window.pet.skip()
+        window.pet.advance()
+        window.pet.energy = 80
+        assert window._expression() == "happy"
 
 
-# --- Alert animation tests ---
-class TestAlertAnimation:
-    def test_start_alert_sets_active(self, timer):
-        timer.start_alert()
-        assert timer.alert_active is True
+class TestActionLabel:
+    def test_start_focus(self, window):
+        assert window._action_label() == "iniciar foco"
 
-    def test_stop_alert_clears_active(self, timer):
-        timer.start_alert()
-        timer.stop_alert()
-        assert timer.alert_active is False
+    def test_running(self, window):
+        window.pet.start()
+        assert window._action_label() == "pausar"
 
-    def test_flash_increments_step(self, timer):
-        timer.start_alert()
-        initial_step = timer.flash_step
-        timer.flash()
-        assert timer.flash_step == initial_step + 1
+    def test_resume_when_paused(self, window):
+        window.pet.start()
+        window.pet.tick(0.5)
+        window.pet.pause()
+        assert window._action_label() == "retomar"
 
-    def test_flash_stops_when_alert_inactive(self, timer):
-        timer.alert_active = False
-        timer.flash_step = 0
-        timer.flash()
-        assert timer.flash_step == 0  # no increment
-
-    def test_shake_completes(self, timer):
-        timer.start_alert()
-        timer.shake()
-        # shake() calls _do_shake_step which schedules via root.after()
-        # First step runs immediately
-        assert timer.shake_index == 1
-        assert len(timer.shake_offsets) == 7
-        # Run all remaining steps manually
-        for _ in range(6):
-            timer._do_shake_step(timer.root.winfo_x(), timer.root.winfo_y())
-        assert timer.shake_index == 7
+    def test_start_break(self, window):
+        window.pet.skip()
+        assert window._action_label() == "comecar pausa"
 
 
-# --- Demo mode test ---
-class TestDemoMode:
-    def test_duration_parameter(self):
-        from pomodoro import PomodoroTimer
-        t = PomodoroTimer(duration=5)
-        assert t.duration == 5
-        assert t.remaining == 5
+class TestJoyAnimation:
+    def test_break_starts_with_joy(self, window):
+        window.pet.skip()             # foco encerrado, aguardando
+        window._primary_action()      # marca o inicio da pausa
+        assert window.pet.phase == BREAK
+        assert window.pet.running is True
+        assert window.joy > 0
 
-    def test_default_duration(self):
-        from pomodoro import PomodoroTimer
-        t = PomodoroTimer()
-        assert t.duration == 25 * 60
+    def test_no_joy_when_starting_focus(self, window):
+        window.pet.start()
+        assert window.joy == 0
+
+    def test_joy_decays(self, window):
+        window.pet.skip()
+        window._primary_action()
+        window._update(0.5)
+        assert 0 < window.joy < 1.8
 
 
-# --- Context menu tests ---
-class TestContextMenu:
-    def test_menu_exists(self, timer):
-        assert timer.menu is not None
+class TestRender:
+    def test_draw_runs_for_every_mood(self, window):
+        for energy in (0, 15, 30, 50, 70, 90, 100):
+            window.pet.energy = energy
+            window._draw()
 
-    def test_menu_toggle_calls_toggle_timer(self, timer):
-        timer.toggle_timer()
-        assert timer.running is True
+    def test_draw_during_break(self, window):
+        window.pet.skip()
+        window.pet.advance()
+        window.pet.energy = 60
+        window._draw()
+        window.pet.energy = 90
+        window._draw()
 
-    def test_menu_reset_calls_reset_timer(self, timer):
-        timer.remaining = 3
-        timer.reset_timer()
-        assert timer.remaining == 10
+    def test_draw_awaiting_and_alert(self, window):
+        window.pet.skip()
+        window.alert = 1.6
+        window._draw()
 
-    def test_show_context_menu_calls_post(self, timer):
-        event = MagicMock()
-        event.x_root = 100
-        event.y_root = 200
-        timer.show_context_menu(event)
-        timer.menu.post.assert_called_once_with(100, 200)
+    def test_draw_with_joy(self, window):
+        window.pet.skip()
+        window._primary_action()
+        window._draw()
+
+    def test_draw_expanded_layout(self, window):
+        window.reveal = 1.0
+        window.pet.start()
+        window.pet.energy = 60
+        window._draw()
+
+    def test_draw_expanded_awaiting(self, window):
+        window.reveal = 1.0
+        window.pet.skip()
+        window.alert = 1.6
+        window._draw()
+
+    def test_update_awaits_after_focus(self, window):
+        window.pet.start()
+        for _ in range(130):          # 2s de foco + folga
+            window._update(1 / 60)
+        assert window.pet.awaiting is True
+        assert window.pet.phase == FOCUS   # nao troca sozinho
+        assert window.alert > 0
+
+
+class TestOverlay:
+    def test_expanded_threshold(self, window):
+        window.reveal = 0.0
+        assert window.expanded is False
+        window.reveal = 1.0
+        assert window.expanded is True
+
+    def test_reveal_clamped_by_update(self, window):
+        for _ in range(200):
+            window._update(1 / 60)
+        assert 0.0 <= window.reveal <= 1.0
+
+    def test_pet_rect_follows_layout(self, window):
+        window.reveal = 0.0
+        compact = window._pet_rect().center
+        window.reveal = 1.0
+        assert window._pet_rect().center != compact
+
+    def test_opaque_mode_uses_solid_background(self):
+        from pomodoro import BG
+        w = PetWindow(focus_duration=2, break_duration=1, opaque=True)
+        assert w.base == BG
+        w.running = False

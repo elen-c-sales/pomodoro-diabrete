@@ -1,177 +1,722 @@
-import tkinter as tk
-from tkinter import font as tkfont
-import time
-import threading
+"""Pomodoro-Tamagotchi — timer Pomodoro em Pygame com um monstrengo fofo.
+
+O bichinho e pixel art desenhada em tempo real (sem sprites externos). Ele
+comeca fofo e vai virando um demoniozinho conforme o cansaco aumenta: chifres
+crescem, os olhos ficam afiados, a boca vira um grin com presas e nasce uma
+cauda pontuda. Quando o tempo acaba, ele NAO troca de fase sozinho: voce marca
+que a pausa comecou, ele comemora (animacao de alegria) e entao se recupera.
+
+Controles:
+    Clique esquerdo .... botao de acao (iniciar / pausar / comecar fase)
+    Arrastar (topo) .... mover a janela
+    Clique direito ..... nova sessao (reset)
+    ESPACO / ENTER ..... botao de acao
+    S .................. pular fase
+    R .................. reset
+    ESC ................ sair
+"""
+
+import math
+import os
+import sys
+
+os.environ.setdefault("PYGAME_HIDE_SUPPORT_PROMPT", "1")
+
+import pygame
+
+from pet import (
+    PomodoroPet, FOCUS, BREAK,
+    FOCUS_DONE, BREAK_DONE, BREAK_STARTED,
+)
+
+WIDTH, HEIGHT = 240, 168
+FPS = 60
+
+SPRITE = 64          # resolucao logica do bichinho (pixel art)
+SCALE = 2            # ampliacao com nearest-neighbor
+
+MAGIC = (255, 0, 255)     # cor-chave: vira 100% transparente (Windows)
+REVEAL_SPEED = 6.0        # velocidade da transicao compacto <-> expandido
+ALPHA_IDLE = 120          # opacidade no repouso (0-255)
+ALPHA_ACTIVE = 240        # opacidade com o mouse em cima
+REVEAL_THRESHOLD = 0.4
+
+# Layout compacto (so bichinho + timer)
+COMPACT_PET = (62, 88)
+COMPACT_TIMER = (178, 88)
+
+# Layout expandido (painel com tudo)
+PANEL_RECT = pygame.Rect(3, 3, WIDTH - 6, HEIGHT - 6)
+EXPANDED_PET = (50, 88)
+EXPANDED_TIMER = (168, 50)
+ENERGY_BAR = pygame.Rect(104, 80, 116, 11)
+CYCLES_Y = 102
+BTN_MAIN = pygame.Rect(104, 112, 120, 22)
+BTN_SKIP = pygame.Rect(104, 138, 38, 20)
+BTN_RESET = pygame.Rect(145, 138, 38, 20)
+BTN_EXIT = pygame.Rect(186, 138, 38, 20)
+
+# Paleta
+BG = (26, 28, 35)
+PANEL = (40, 43, 53)
+TEXT = (236, 239, 246)
+MUTED = (140, 148, 166)
+FOCUS_ACCENT = (255, 96, 96)
+BREAK_ACCENT = (86, 220, 140)
+EYE_WHITE = (250, 250, 253)
+INK = (30, 22, 38)          # contorno do bichinho
+DEMON_EYE = (255, 214, 96)
+SWEAT = (150, 205, 255)
+SPARK = (255, 226, 120)
+TOOTH = (250, 250, 255)
+
+# Cores da energia: 0.0 = exausto/demonio, 1.0 = fofo
+ENERGY_STOPS = (
+    (0.0, (168, 40, 62)),
+    (0.25, (216, 92, 74)),
+    (0.55, (238, 170, 100)),
+    (1.0, (122, 214, 150)),
+)
+
+JOY_TIME = 1.8
+ALERT_TIME = 1.6
 
 
-class PomodoroTimer:
-    def __init__(self, duration=25 * 60):
-        self.duration = duration  # Total duration in seconds
-        self.root = tk.Tk()
-        self.root.title("Pomodoro")
-        self.root.overrideredirect(True)  # Remove decorations (frameless)
-        self.root.attributes("-topmost", True)  # Always on top
-        self.root.attributes("-alpha", 0.7)  # 70% opacity (semi-transparent)
-        self.root.configure(bg="#2d2d2d")  # Soft dark background
+def clamp(value, low, high):
+    return max(low, min(high, value))
 
-        # Window size and position (center-top of screen)
-        w, h = 140, 50
-        x = (self.root.winfo_screenwidth() // 2) - (w // 2)
-        y = 40
-        self.root.geometry(f"{w}x{h}+{x}+{y}")
 
-        # Enable dragging
-        self.root.bind("<Button-1>", self.start_move)
-        self.root.bind("<B1-Motion>", self.do_move)
-        self.root.bind("<ButtonRelease-1>", self.stop_move)
+def lerp(a, b, t):
+    return a + (b - a) * t
 
-        # Mouse hover events for opacity and color change
-        self.root.bind("<Enter>", self.on_enter)
-        self.root.bind("<Leave>", self.on_leave)
 
-        # Timer label
-        self.remaining = self.duration  # Start countdown from duration
-        self.running = False
+def mix(c1, c2, t):
+    return tuple(int(round(a + (b - a) * t)) for a, b in zip(c1, c2))
 
-        self.label = tk.Label(
-            self.root,
-            text=self.format_time(self.remaining),
-            bg="#2d2d2d",
-            fg="#aaaaaa",
-            font=tkfont.Font(family="Consolas", size=18, weight="bold"),
+
+def energy_color(energy):
+    level = clamp(energy / 100.0, 0.0, 1.0)
+    for (p0, c0), (p1, c1) in zip(ENERGY_STOPS, ENERGY_STOPS[1:]):
+        if level <= p1:
+            span = (p1 - p0) or 1.0
+            return mix(c0, c1, (level - p0) / span)
+    return ENERGY_STOPS[-1][1]
+
+
+def shade(color, factor):
+    return tuple(int(round(c * factor)) for c in color)
+
+
+class _WindowDrag:
+    """Mover/sempre-no-topo para janela sem bordas (somente Windows)."""
+
+    HWND_TOPMOST = -1
+
+    def __init__(self):
+        self.ok = False
+        self.transparent = False
+        self._colorkey = 0
+        self._last_alpha = None
+        if sys.platform != "win32":
+            return
+        try:
+            import ctypes
+            from ctypes import wintypes
+
+            self._ctypes = ctypes
+            self._wintypes = wintypes
+            self._user32 = ctypes.windll.user32
+            info = pygame.display.get_wm_info()
+            self.hwnd = info.get("window")
+            self.ok = bool(self.hwnd)
+            if self.ok:
+                self._configure()
+        except Exception:
+            self.ok = False
+
+    def _configure(self):
+        """Define argtypes para os handles de 64 bits nao serem truncados."""
+        c = self._ctypes
+        w = self._wintypes
+        u = self._user32
+        u.GetWindowLongW.argtypes = [w.HWND, c.c_int]
+        u.GetWindowLongW.restype = c.c_long
+        u.SetWindowLongW.argtypes = [w.HWND, c.c_int, c.c_long]
+        u.SetWindowLongW.restype = c.c_long
+        u.SetWindowPos.argtypes = [w.HWND, w.HWND, c.c_int, c.c_int,
+                                   c.c_int, c.c_int, c.c_uint]
+        u.SetLayeredWindowAttributes.argtypes = [w.HWND, c.c_uint32,
+                                                 c.c_ubyte, c.c_uint32]
+        u.MoveWindow.argtypes = [w.HWND, c.c_int, c.c_int, c.c_int,
+                                 c.c_int, w.BOOL]
+        u.GetCursorPos.argtypes = [c.POINTER(w.POINT)]
+        u.GetWindowRect.argtypes = [w.HWND, c.POINTER(w.RECT)]
+
+    def set_topmost(self):
+        if not self.ok:
+            return
+        SWP_NOSIZE, SWP_NOMOVE = 0x0001, 0x0002
+        self._user32.SetWindowPos(
+            self.hwnd, self.HWND_TOPMOST, 0, 0, 0, 0, SWP_NOSIZE | SWP_NOMOVE
         )
-        self.label.pack(expand=True, fill="both")
 
-        # Click to start/pause, right-click for context menu
-        self.label.bind("<Button-1>", self.toggle_timer)
-        self.label.bind("<Button-3>", self.show_context_menu)
+    def cursor_pos(self):
+        pt = self._wintypes.POINT()
+        self._user32.GetCursorPos(self._ctypes.byref(pt))
+        return pt.x, pt.y
 
-        # Idle (original) colors
-        self.idle_bg = "#2d2d2d"
-        self.idle_fg = "#aaaaaa"
-        # Hover (active) colors
-        self.hover_bg = "#00c853"
-        self.hover_fg = "#ffffff"
+    def move_to(self, x, y):
+        if not self.ok:
+            return
+        self._user32.MoveWindow(self.hwnd, x, y, WIDTH, HEIGHT, True)
 
-        self.start_move_data = None
-        self.alert_active = False
+    def top_left(self):
+        rect = self._wintypes.RECT()
+        self._user32.GetWindowRect(self.hwnd, self._ctypes.byref(rect))
+        return rect.left, rect.top
 
-        # Right-click context menu
-        self.menu = tk.Menu(self.root, tearoff=0)
-        self.menu.add_command(label="Iniciar / Pausar", command=self.toggle_timer)
-        self.menu.add_command(label="Reset", command=self.reset_timer)
-        self.menu.add_separator()
-        self.menu.add_command(label="Sair", command=self.root.quit)
+    def enable_transparency(self, key=MAGIC):
+        """Ativa janela em camadas com fundo transparente por cor-chave."""
+        if not self.ok:
+            return
+        GWL_EXSTYLE = -20
+        WS_EX_LAYERED = 0x00080000
+        SWP_NOSIZE, SWP_NOMOVE, SWP_NOZORDER, SWP_FRAMECHANGED = (
+            0x0001, 0x0002, 0x0004, 0x0020)
+        style = self._user32.GetWindowLongW(self.hwnd, GWL_EXSTYLE)
+        self._user32.SetWindowLongW(
+            self.hwnd, GWL_EXSTYLE, style | WS_EX_LAYERED)
+        self._user32.SetWindowPos(
+            self.hwnd, 0, 0, 0, 0, 0,
+            SWP_NOSIZE | SWP_NOMOVE | SWP_NOZORDER | SWP_FRAMECHANGED)
+        self._colorkey = key[0] | (key[1] << 8) | (key[2] << 16)  # COLORREF
+        self.transparent = True
 
-    def format_time(self, seconds):
-        m, s = divmod(seconds, 60)
-        return f"{m:02d}:{s:02d}"
+    def set_alpha(self, alpha):
+        """Opacidade da janela (0-255); a cor-chave fica sempre transparente."""
+        if not self.ok or not self.transparent:
+            return
+        alpha = int(clamp(alpha, 0, 255))
+        if alpha == self._last_alpha:
+            return
+        self._last_alpha = alpha
+        LWA_COLORKEY, LWA_ALPHA = 0x00000001, 0x00000002
+        self._user32.SetLayeredWindowAttributes(
+            self.hwnd, self._colorkey, alpha, LWA_COLORKEY | LWA_ALPHA)
 
-    def show_context_menu(self, event):
-        self.menu.post(event.x_root, event.y_root)
 
-    def toggle_timer(self, event=None):
-        if self.running:
+class PetWindow:
+    def __init__(self, focus_duration=25 * 60, break_duration=5 * 60,
+                 opaque=False):
+        pygame.init()
+        pygame.display.set_caption("Pomodoro Pet")
+        self.screen = pygame.display.set_mode((WIDTH, HEIGHT), pygame.NOFRAME)
+        self.clock = pygame.time.Clock()
+        self.base = BG if opaque else MAGIC
+
+        self.pet = PomodoroPet(focus_duration=focus_duration,
+                               break_duration=break_duration)
+
+        self.font_compact = pygame.font.SysFont("consolas", 34, bold=True)
+        self.font_timer = pygame.font.SysFont("consolas", 26, bold=True)
+        self.font_label = pygame.font.SysFont("consolas", 12, bold=True)
+        self.font_button = pygame.font.SysFont("consolas", 13, bold=True)
+        self.font_small = pygame.font.SysFont("consolas", 12)
+        self.font_tiny = pygame.font.SysFont("consolas", 11)
+
+        self.drag = _WindowDrag()
+        self.drag.set_topmost()
+        if not opaque:
+            self.drag.enable_transparency()
+
+        self.pressed = False
+        self.drag_cursor = (0, 0)
+        self.drag_origin = (0, 0)
+        self.drag_moved = False
+        self.look = (0.0, 0.0)
+
+        self.running = True
+        self.joy = 0.0       # animacao de alegria ao comecar a pausa
+        self.alert = 0.0     # pulso quando uma fase termina
+        self.reveal = 0.0    # 0 = compacto, 1 = expandido
+
+    @property
+    def expanded(self):
+        return self.reveal > REVEAL_THRESHOLD
+
+    def _pet_center(self):
+        return EXPANDED_PET if self.expanded else COMPACT_PET
+
+    # --- eventos ---
+    def _handle_events(self):
+        for event in pygame.event.get():
+            if event.type == pygame.QUIT:
+                self.running = False
+            elif event.type == pygame.KEYDOWN:
+                self._on_key(event.key)
+            elif event.type == pygame.MOUSEBUTTONDOWN:
+                self._on_mouse_down(event)
+            elif event.type == pygame.MOUSEBUTTONUP:
+                self._on_mouse_up(event)
+            elif event.type == pygame.MOUSEMOTION:
+                self._on_motion()
+
+    def _on_key(self, key):
+        if key == pygame.K_ESCAPE:
             self.running = False
+        elif key in (pygame.K_SPACE, pygame.K_RETURN):
+            self._primary_action()
+        elif key == pygame.K_r:
+            self.pet.reset()
+        elif key == pygame.K_s:
+            self._skip()
+
+    def _on_mouse_down(self, event):
+        if event.button == 1:
+            self.pressed = True
+            self.drag_moved = False
+            self.drag_cursor = self.drag.cursor_pos()
+            self.drag_origin = self.drag.top_left()
+        elif event.button == 3:
+            self.pet.reset()
+
+    def _on_mouse_up(self, event):
+        if event.button != 1:
+            return
+        was_drag = self.drag_moved
+        self.pressed = False
+        self.drag_moved = False
+        if was_drag:
+            return
+        if self.expanded:
+            if BTN_SKIP.collidepoint(event.pos):
+                self._skip()
+            elif BTN_RESET.collidepoint(event.pos):
+                self.pet.reset()
+            elif BTN_EXIT.collidepoint(event.pos):
+                self.running = False
+            elif (BTN_MAIN.collidepoint(event.pos)
+                  or self._pet_rect().collidepoint(event.pos)):
+                self._primary_action()
         else:
-            self.running = True
-            self.countdown()
+            self._primary_action()
 
-    def reset_timer(self, event=None):
-        self.running = False
-        self.stop_alert()  # Stop animation if active
-        self.remaining = self.duration
-        self.label.config(text=self.format_time(self.remaining),
-                          bg=self.idle_bg, fg=self.idle_fg)
-
-    def countdown(self):
-        if self.running and self.remaining > 0:
-            self.label.config(text=self.format_time(self.remaining))
-            self.remaining -= 1
-            self.root.after(1000, self.countdown)
-        elif self.remaining == 0:
-            self.label.config(text="00:00")
-            self.running = False
-            self.start_alert()  # Trigger alert animation
-
-    # --- Alert animation when timer ends ---
-    def start_alert(self):
-        self.alert_active = True
-        self.flash_step = 0
-        self.flash()      # Start flashing colors
-        self.shake()      # Start window shake
-
-    def flash(self):
-        """Alternates label between red and dark, creating a blinking effect."""
-        if not self.alert_active:
+    def _on_motion(self):
+        if not self.pressed or not self.drag.ok:
             return
-        colors = [("#ff1744", "#ffffff"), ("#2d2d2d", "#aaaaaa")]
-        bg, fg = colors[self.flash_step % 2]
-        self.label.config(text="TIME'S UP!", bg=bg, fg=fg)
-        self.flash_step += 1
-        self.root.after(500, self.flash)  # Blink every 500ms
+        cx, cy = self.drag.cursor_pos()
+        dx = cx - self.drag_cursor[0]
+        dy = cy - self.drag_cursor[1]
+        if not self.drag_moved and (abs(dx) > 3 or abs(dy) > 3):
+            self.drag_moved = True
+        if self.drag_moved:
+            self.drag.move_to(self.drag_origin[0] + dx, self.drag_origin[1] + dy)
 
-    def shake(self):
-        """Moves the window left-right rapidly for a shake effect."""
-        if not self.alert_active:
-            return
-        base_x = self.root.winfo_x()
-        base_y = self.root.winfo_y()
-        offsets = [6, -6, 4, -4, 2, -2, 0]
-        self.shake_offsets = offsets
-        self.shake_index = 0
-        self._do_shake_step(base_x, base_y)
+    def _pet_rect(self):
+        size = SPRITE * SCALE
+        return pygame.Rect(0, 0, size, size).move(
+            self._pet_center()[0] - size // 2,
+            self._pet_center()[1] - size // 2)
 
-    def _do_shake_step(self, base_x, base_y):
-        if not self.alert_active or self.shake_index >= len(self.shake_offsets):
-            self.root.geometry(f"+{base_x}+{base_y}")
-            return
-        dx = self.shake_offsets[self.shake_index]
-        self.root.geometry(f"+{base_x + dx}+{base_y}")
-        self.shake_index += 1
-        self.root.after(50, self._do_shake_step, base_x, base_y)
+    def _primary_action(self):
+        """Botao unico: inicia/pausa ou marca o inicio da proxima fase."""
+        if self.pet.toggle() == BREAK_STARTED:
+            self.joy = JOY_TIME
 
-    def stop_alert(self):
-        """Stops the alert animation and resets colors."""
-        self.alert_active = False
-        self.label.config(text=self.format_time(self.remaining),
-                          bg=self.idle_bg, fg=self.idle_fg)
+    def _skip(self):
+        event = self.pet.skip()
+        if event in (FOCUS_DONE, BREAK_DONE):
+            self.alert = ALERT_TIME
 
-    # --- Dragging ---
-    def start_move(self, event):
-        self.start_move_data = (event.x, event.y)
-
-    def do_move(self, event):
-        if self.start_move_data:
-            dx = event.x - self.start_move_data[0]
-            dy = event.y - self.start_move_data[1]
-            x = self.root.winfo_x() + dx
-            y = self.root.winfo_y() + dy
-            self.root.geometry(f"+{x}+{y}")
-
-    def stop_move(self, event):
-        self.start_move_data = None
-
-    # --- Hover effects ---
-    def on_enter(self, event):
-        self.root.attributes("-alpha", 1.0)  # 100% opacity on hover
-        if not self.alert_active:
-            self.label.config(bg=self.hover_bg, fg=self.hover_fg)
-
-    def on_leave(self, event):
-        self.root.attributes("-alpha", 0.7)  # Back to 70% opacity
-        if not self.alert_active:
-            self.label.config(bg=self.idle_bg, fg=self.idle_fg)
-
+    # --- loop ---
     def run(self):
-        self.root.mainloop()
+        while self.running:
+            dt = self.clock.tick(FPS) / 1000.0
+            self._handle_events()
+            self._update(dt)
+            self._draw()
+            pygame.display.flip()
+        pygame.quit()
+
+    def _update(self, dt):
+        for event in self.pet.tick(dt):
+            if event in (FOCUS_DONE, BREAK_DONE):
+                self.alert = ALERT_TIME
+        self.joy = max(0.0, self.joy - dt)
+        self.alert = max(0.0, self.alert - dt)
+
+        target = 1.0 if pygame.mouse.get_focused() else 0.0
+        step = REVEAL_SPEED * dt
+        if self.reveal < target:
+            self.reveal = min(target, self.reveal + step)
+        else:
+            self.reveal = max(target, self.reveal - step)
+
+        cx, cy = self._pet_center()
+        mx, my = pygame.mouse.get_pos()
+        self.look = (clamp((mx - cx) / (WIDTH / 2), -1.0, 1.0),
+                     clamp((my - cy) / (HEIGHT / 2), -1.0, 1.0))
+
+    # --- expressoes ---
+    def _expression(self):
+        if self.joy > 0:
+            return "happy"
+        if self.pet.phase == BREAK and self.pet.running:
+            return "happy" if self.pet.energy >= 70 else "resting"
+        return self.pet.mood
+
+    def _action_label(self):
+        p = self.pet
+        if p.awaiting:
+            return "comecar pausa" if p.phase == FOCUS else "iniciar foco"
+        if p.running:
+            return "pausar"
+        if p.progress > 0:
+            return "retomar"
+        return "iniciar foco" if p.phase == FOCUS else "iniciar pausa"
+
+    # --- desenho ---
+    def _draw(self):
+        t = pygame.time.get_ticks() / 1000.0
+        self.screen.fill(self.base)
+        if self.expanded:
+            self._draw_expanded(t)
+        else:
+            self._draw_compact(t)
+        self.drag.set_alpha(lerp(ALPHA_IDLE, ALPHA_ACTIVE, self.reveal))
+
+    def _accent(self):
+        return BREAK_ACCENT if self.pet.phase == BREAK else FOCUS_ACCENT
+
+    def _timer_color(self):
+        return self._accent() if self.pet.awaiting else TEXT
+
+    def _draw_compact(self, t):
+        self._draw_pet(t, *COMPACT_PET)
+        text = self.font_compact.render(
+            PomodoroPet.format_time(self.pet.remaining), False, self._timer_color())
+        self.screen.blit(text, text.get_rect(center=COMPACT_TIMER))
+        if self.alert > 0:
+            self._draw_alert(COMPACT_PET[0], COMPACT_PET[1] - 58)
+
+    def _draw_expanded(self, t):
+        pygame.draw.rect(self.screen, PANEL, PANEL_RECT, border_radius=10)
+        pygame.draw.rect(self.screen, shade(PANEL, 1.6), PANEL_RECT, 2,
+                         border_radius=10)
+
+        label = self.font_label.render(self.pet.phase_label, False, (20, 22, 28))
+        pill = pygame.Rect(0, 0, label.get_width() + 18, 18)
+        pill.topleft = (PANEL_RECT.x + 8, PANEL_RECT.y + 7)
+        pygame.draw.rect(self.screen, self._accent(), pill, border_radius=9)
+        self.screen.blit(label, label.get_rect(center=pill.center))
+
+        status = ("aguardando" if self.pet.awaiting
+                  else "rodando" if self.pet.running else "pausado")
+        txt = self.font_tiny.render(status, False, MUTED)
+        self.screen.blit(txt, txt.get_rect(midright=(PANEL_RECT.right - 8,
+                                                     pill.centery)))
+
+        self._draw_pet(t, *EXPANDED_PET)
+        self._draw_timer(*EXPANDED_TIMER)
+        self._draw_energy()
+        self._draw_cycles()
+        self._button(BTN_MAIN, self._action_label(), primary=True)
+        self._button(BTN_SKIP, "pular")
+        self._button(BTN_RESET, "reset")
+        self._button(BTN_EXIT, "sair")
+        if self.alert > 0:
+            self._draw_alert(EXPANDED_PET[0], EXPANDED_PET[1] - 58)
+
+    def _button(self, rect, label, primary=False):
+        hovered = rect.collidepoint(pygame.mouse.get_pos())
+        active = primary and (self.pet.awaiting or not self.pet.running)
+        base = self._accent() if active else shade(PANEL, 1.35)
+        color = mix(base, (255, 255, 255), 0.25 if hovered else 0.0)
+        pygame.draw.rect(self.screen, color, rect, border_radius=5)
+        pygame.draw.rect(self.screen, shade(PANEL, 1.9), rect, 1, border_radius=5)
+        txt = self.font_button.render(label, False,
+                                      (20, 22, 28) if active else TEXT)
+        self.screen.blit(txt, txt.get_rect(center=rect.center))
+
+    def _draw_alert(self, x, y):
+        pulse = 1.0 + 0.4 * abs(math.sin(pygame.time.get_ticks() / 130.0))
+        mark = self.font_button.render("!", False, self._accent())
+        mark = pygame.transform.scale(
+            mark, (int(mark.get_width() * pulse),
+                   int(mark.get_height() * pulse)))
+        self.screen.blit(mark, mark.get_rect(center=(int(x), int(y))))
+
+    def _draw_pet(self, t, cx, cy):
+        expr = self._expression()
+        resting = expr == "resting"
+
+        if self.joy > 0:
+            bob = -abs(math.sin(t * 7.0)) * 12 * min(1.0, self.joy / 1.2)
+        else:
+            speed = 1.1 if resting else 2.4
+            amp = 2 if expr == "exhausted" else 4
+            bob = math.sin(t * speed) * amp
+
+        # sombra no chao (so no painel; no modo flutuante fica estranha)
+        if self.expanded:
+            shadow_w = int(SPRITE * SCALE * 0.6)
+            pygame.draw.ellipse(self.screen, (18, 19, 24),
+                                pygame.Rect(cx - shadow_w // 2, cy + 30,
+                                            shadow_w, 13))
+
+        sprite = self._sprite(expr, t)
+        scaled = pygame.transform.scale(sprite, (SPRITE * SCALE, SPRITE * SCALE))
+        rect = scaled.get_rect(center=(cx, int(cy + bob)))
+        self.screen.blit(scaled, rect)
+
+    def _menace(self):
+        """0 = fofinho, 1 = demoniozinho. Demoniza conforme a energia cai."""
+        return clamp((0.7 - self.pet.energy / 100.0) / 0.7, 0.0, 1.0)
+
+    def _sprite(self, expr, t):
+        """Desenha o monstrengo numa superficie 64x64 (ampliada depois)."""
+        s = pygame.Surface((SPRITE, SPRITE), pygame.SRCALPHA)
+        bx, by, radius = 32, 33, 17
+        men = self._menace()
+        if self.joy > 0:
+            men *= 0.6      # na comemoracao ele fica mais fofo que demonio
+        body = energy_color(self.pet.energy)
+        dark = shade(body, 0.52)
+        resting = expr == "resting"
+
+        self._sprite_tail(s, bx, by, radius, men, dark)
+        self._sprite_horns(s, bx, by, radius, men, body)
+
+        pygame.draw.circle(s, body, (bx, by), radius)
+        pygame.draw.ellipse(s, mix(body, (255, 255, 255), 0.20),
+                            pygame.Rect(bx - 9, by + 1, 18, 13))
+        if men < 0.6:
+            pygame.draw.ellipse(s, shade(body, 0.88),
+                                pygame.Rect(bx - 14, by - 8, 7, 5))
+            pygame.draw.ellipse(s, shade(body, 0.88),
+                                pygame.Rect(bx + 6, by - 4, 5, 4))
+        pygame.draw.circle(s, INK, (bx, by), radius, 2)
+
+        for dx in (-6, 6):
+            foot = pygame.Rect(bx + dx - 4, by + radius - 3, 8, 6)
+            pygame.draw.ellipse(s, dark, foot)
+            pygame.draw.ellipse(s, INK, foot, 1)
+
+        self._sprite_arms(s, bx, by, radius, men, body)
+
+        if expr in ("happy", "ok") or resting:
+            for dx in (-11, 11):
+                pygame.draw.circle(s, (255, 140, 150), (bx + dx, by + 4), 2)
+
+        self._sprite_face(s, bx, by, men, expr, t)
+
+        if expr in ("tired", "exhausted") and self.pet.running:
+            self._sprite_sweat(s, bx, by, t)
+        if resting:
+            self._sprite_zzz(s, bx, by, t)
+        if self.joy > 0:
+            self._sprite_joy(s, bx, by, radius, t)
+        return s
+
+    def _sprite_tail(self, s, bx, by, radius, men, color):
+        if men <= 0.2:
+            return
+        k = (men - 0.2) / 0.8
+        start = (bx + radius - 2, by + radius - 5)
+        mid = (bx + radius + 6, by + radius - 7)
+        tip = (bx + radius + 8, by + 2 - int(7 * k))
+        pygame.draw.lines(s, color, False, [start, mid, tip], 3)
+        pygame.draw.polygon(s, color, [(tip[0] - 3, tip[1] + 1),
+                                       (tip[0] + 3, tip[1] + 1),
+                                       (tip[0], tip[1] - 6)])
+
+    def _sprite_horns(self, s, bx, by, radius, men, body):
+        lit = mix(body, (255, 255, 255), 0.35)
+        color = mix(lit, (104, 62, 120), men)
+        length = int(lerp(5, 15, men))
+        curve = int(lerp(1, 5, men))
+        base_y = by - radius + 3
+        for side in (-1, 1):
+            base_x = bx + side * 9
+            tip = (int(bx + side * (9 + curve)), base_y - length)
+            points = [(base_x - 3, base_y), (base_x + 3, base_y), tip]
+            pygame.draw.polygon(s, color, points)
+            pygame.draw.polygon(s, INK, points, 1)
+
+    def _sprite_arms(self, s, bx, by, radius, men, body):
+        arm = shade(body, 0.90)
+        raised = self.joy > 0
+        for side in (-1, 1):
+            ax = int(bx + side * (radius - 2))
+            ay = int(by + (-2 if raised else 4))
+            rect = pygame.Rect(0, 0, 7, 10)
+            rect.center = (ax, ay)
+            pygame.draw.ellipse(s, arm, rect)
+            pygame.draw.ellipse(s, INK, rect, 1)
+
+    def _sprite_face(self, s, bx, by, men, expr, t):
+        dark = INK
+        if expr == "resting":
+            for side in (-1, 1):
+                x = bx + side * 7
+                y = by - 4
+                pygame.draw.lines(s, dark, False,
+                                  [(x - 4, y), (x, y + 2), (x + 4, y)], 2)
+            self._sprite_mouth(s, bx, by + 8, 0.0, "smile")
+            return
+        if expr == "exhausted":
+            for side in (-1, 1):
+                x = bx + side * 7
+                y = by - 4
+                pygame.draw.lines(s, dark, False,
+                                  [(x - 4, y + 1), (x, y - 2), (x + 4, y + 1)], 2)
+            self._sprite_mouth(s, bx, by + 8, 1.0, "pant")
+            return
+
+        blink = (t % 3.6) < 0.11
+        eye_w = int(lerp(8, 11, men))
+        eye_h = int(lerp(9, 5, men))
+        sclera = mix(EYE_WHITE, DEMON_EYE, men)
+        for side in (-1, 1):
+            x = bx + side * 7
+            y = by - 4
+            if blink:
+                pygame.draw.line(s, dark,
+                                 (x - eye_w // 2, y), (x + eye_w // 2, y), 2)
+                continue
+            rect = pygame.Rect(0, 0, eye_w, eye_h)
+            rect.center = (x, y)
+            pygame.draw.ellipse(s, sclera, rect)
+            pygame.draw.ellipse(s, dark, rect, 1)
+            px = x + int(self.look[0] * 1.5)
+            py = y + int(self.look[1] * 1.5)
+            if expr == "focus":
+                py = y + 1
+            pupil_w = int(lerp(3, 2, men))
+            pupil_h = int(lerp(4, eye_h - 1, men))
+            prect = pygame.Rect(0, 0, max(2, pupil_w), max(3, pupil_h))
+            prect.center = (px, py)
+            pygame.draw.ellipse(s, dark, prect)
+            if men < 0.7:
+                pygame.draw.rect(s, EYE_WHITE, (x - 2, y - 2, 1, 1))
+
+            brow = max(men, 0.45 if expr == "focus" else 0.0)
+            if brow > 0.12:
+                outer = (x + side * (eye_w // 2), y - eye_h // 2 - 1)
+                inner = (x - side * (eye_w // 2),
+                         y - eye_h // 2 - 1 + int(4 * brow))
+                pygame.draw.line(s, dark, outer, inner, 2)
+
+        if expr == "focus":
+            self._sprite_mouth(s, bx, by + 8, men, "flat")
+        elif expr == "tired":
+            self._sprite_mouth(s, bx, by + 8, men, "tired")
+        else:
+            self._sprite_mouth(s, bx, by + 8, men, "smile")
+
+    def _sprite_mouth(self, s, mx, my, men, style):
+        if men >= 0.5 and style != "pant":
+            k = (men - 0.5) / 0.5
+            gw = int(lerp(8, 20, k))
+            gh = int(lerp(3, 7, k))
+            pygame.draw.ellipse(s, INK,
+                                pygame.Rect(mx - gw // 2, my - gh // 2, gw, gh))
+            teeth = 2 + int(3 * k)
+            for i in range(teeth):
+                fx = mx - gw // 2 + 2 + i * (gw - 4) // max(1, teeth - 1)
+                pygame.draw.polygon(s, TOOTH, [(fx - 1, my - gh // 2),
+                                               (fx + 1, my - gh // 2),
+                                               (fx, my - gh // 2 + 3)])
+                pygame.draw.polygon(s, TOOTH, [(fx - 1, my + gh // 2),
+                                               (fx + 1, my + gh // 2),
+                                               (fx, my + gh // 2 - 3)])
+            return
+        if style == "flat":
+            pygame.draw.line(s, INK, (mx - 5, my), (mx + 5, my), 2)
+        elif style == "tired":
+            pygame.draw.line(s, INK, (mx - 4, my), (mx + 4, my - 1), 2)
+        elif style == "pant":
+            pygame.draw.ellipse(s, INK, pygame.Rect(mx - 3, my - 2, 6, 6))
+        else:
+            curve = 3 if style == "smile" else 1
+            pygame.draw.lines(s, INK, False,
+                              [(mx - 5, my), (mx, my + curve), (mx + 5, my)], 2)
+            if style == "smile":
+                pygame.draw.polygon(s, TOOTH, [(mx + 2, my - 1),
+                                               (mx + 4, my - 1),
+                                               (mx + 3, my + 2)])
+
+    def _sprite_sweat(self, s, bx, by, t):
+        for i, dx in enumerate((-14, 14)):
+            phase = (t * 0.9 + i * 0.5) % 1.0
+            x = bx + dx
+            y = int(by - 8 + phase * 16)
+            pygame.draw.polygon(s, SWEAT, [(x, y - 3), (x - 2, y), (x + 2, y)])
+
+    def _sprite_zzz(self, s, bx, by, t):
+        for i in range(3):
+            phase = (t * 0.6 + i / 3.0) % 1.0
+            size = 4 + i
+            x = bx + 12 + int(phase * 8) + i * 4
+            y = by - 12 - int(phase * 18) - i * 8
+            col = (170 + i * 20, 210, 255)
+            pygame.draw.line(s, col, (x, y), (x + size, y), 2)
+            pygame.draw.line(s, col, (x + size, y), (x, y + size), 2)
+            pygame.draw.line(s, col, (x, y + size), (x + size, y + size), 2)
+
+    def _sprite_joy(self, s, bx, by, radius, t):
+        pygame.draw.circle(s, self._accent(), (bx, by), radius + 4, 2)
+        for i in range(6):
+            angle = t * 2.2 + i * math.pi / 3
+            rr = radius + 5 + 3 * math.sin(t * 3 + i)
+            x = int(bx + math.cos(angle) * rr)
+            y = int(by + math.sin(angle) * rr * 0.8)
+            pygame.draw.rect(s, SPARK, (x - 1, y - 3, 2, 6))
+            pygame.draw.rect(s, SPARK, (x - 3, y - 1, 6, 2))
+
+    def _draw_timer(self, x, y):
+        text = self.font_timer.render(
+            PomodoroPet.format_time(self.pet.remaining), False,
+            self._timer_color())
+        self.screen.blit(text, text.get_rect(center=(x, y)))
+
+    def _draw_energy(self):
+        pygame.draw.rect(self.screen, shade(PANEL, 0.8), ENERGY_BAR,
+                         border_radius=5)
+        fill_w = int(ENERGY_BAR.width * clamp(self.pet.energy / 100.0, 0, 1))
+        if fill_w > 0:
+            pygame.draw.rect(self.screen, energy_color(self.pet.energy),
+                             pygame.Rect(ENERGY_BAR.x, ENERGY_BAR.y, fill_w,
+                                         ENERGY_BAR.height), border_radius=5)
+        pygame.draw.rect(self.screen, shade(PANEL, 1.8), ENERGY_BAR, 1,
+                         border_radius=5)
+        label = self.font_tiny.render(
+            f"energia {int(self.pet.energy)}%", False, MUTED)
+        self.screen.blit(label, (ENERGY_BAR.x, ENERGY_BAR.y - 12))
+
+    def _draw_cycles(self):
+        label = self.font_tiny.render("ciclos", False, MUTED)
+        self.screen.blit(label, label.get_rect(midleft=(ENERGY_BAR.x, CYCLES_Y)))
+        for i in range(min(self.pet.cycles, 6)):
+            pygame.draw.circle(self.screen, BREAK_ACCENT,
+                               (ENERGY_BAR.x + 52 + i * 14, CYCLES_Y), 4)
+        if self.pet.cycles > 6:
+            extra = self.font_tiny.render(
+                f"+{self.pet.cycles - 6}", False, MUTED)
+            self.screen.blit(extra, (ENERGY_BAR.x + 52 + 6 * 14, CYCLES_Y - 6))
+
+
+def main(argv=None):
+    argv = sys.argv[1:] if argv is None else argv
+    demo = "--demo" in argv
+    opaque = "--opaque" in argv
+    if demo:
+        window = PetWindow(focus_duration=6, break_duration=4, opaque=opaque)
+        window.pet.start()
+    else:
+        window = PetWindow(opaque=opaque)
+    window.run()
 
 
 if __name__ == "__main__":
-    import sys
-    demo = "--demo" in sys.argv
-    duration = 5 if demo else 25 * 60
-    app = PomodoroTimer(duration=duration)
-    if demo:
-        app.root.after(500, app.toggle_timer)  # Auto-start after 500ms
-    app.run()
+    main()

@@ -1,2 +1,2 @@
-tkinter
+pygame
 pytest
