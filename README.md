@@ -6,6 +6,15 @@ O diferencial é que a troca de fase é **manual**: ao terminar o foco, o monstr
 
 ---
 
+## Demonstração
+
+| Foco | Fim do foco | Pausa |
+|:---:|:---:|:---:|
+| ![Monstrengo fofo e concentrado no início do foco](demo/foco-concentrado.png) | ![Monstrengo cansado e demonizando, aguardando a pausa](demo/foco-cansado-aguardando.png) | ![Monstrengo recuperado e feliz na pausa](demo/pausa-recuperado.png) |
+| Começa **fofo e concentrado** (energia 85%) | **Cansa e demoniza** no fim do foco; o botão vira *começar pausa* | Na **pausa**, descansa e volta a ficar **feliz** |
+
+---
+
 ## Modo overlay (usar enquanto trabalha)
 
 A janela é feita para ficar discretamente na tela sem atrapalhar o trabalho. Ela tem **fundo 100% transparente** (por cor-chave, no Windows) e dois estados:
@@ -21,6 +30,7 @@ A transição é suave (`REVEAL_SPEED`) e disparada por `pygame.mouse.get_focuse
 
 ## Índice
 
+- [Demonstração](#demonstração)
 - [Modo overlay](#modo-overlay)
 - [Como funciona](#como-funciona)
   - [Ciclo de fases](#ciclo-de-fases)
@@ -101,7 +111,7 @@ stateDiagram-v2
     note right of BREAK_RUN
         energia sobe (+ animação de alegria)
     end note
-    note right of BREAK_AWAIT
+    note left of BREAK_AWAIT
         recuperado, espera novo foco
     end note
 ```
