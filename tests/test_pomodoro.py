@@ -8,7 +8,7 @@ os.environ["SDL_AUDIODRIVER"] = "dummy"
 import pytest
 
 from pet import FOCUS, BREAK
-from pomodoro import PetWindow, energy_color, clamp, mix, shade
+from pomodoro import PetWindow, cue_samples, energy_color, clamp, mix, shade
 
 
 @pytest.fixture
@@ -74,6 +74,24 @@ class TestActionLabel:
     def test_start_break(self, window):
         window.pet.skip()
         assert window._action_label() == "comecar pausa"
+
+
+class TestCues:
+    def test_samples_are_audible(self):
+        limits = {"demon": (1.8, 3.4), "recharge": (0.5, 1.4), "ready": (1.5, 2.6)}
+        for name, (low, high) in limits.items():
+            samples = cue_samples(name)
+            assert low < len(samples) / 22050 < high
+            assert max(abs(s) for s in samples) > 0.2
+
+    def test_phase_changes_play_the_matching_cue(self, window):
+        heard = []
+        window._play = heard.append
+        window.pet.start()
+        window._update(3)
+        window._primary_action()
+        window._update(2)
+        assert heard == ["demon", "recharge", "ready"]
 
 
 class TestJoyAnimation:
