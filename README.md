@@ -1,5 +1,7 @@
 # Pomodoro Pet
 
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+
 Timer Pomodoro em Python + Pygame com um monstrengo fofo que **cansa enquanto você trabalha** e **se recupera nas pausas**. Quanto mais cansado, mais ele **vira um demoniozinho**: a cor, os chifres, os olhos e a boca vão mudando de fofos para demoníacos — um Tamagotchi de produtividade em pixel art.
 
 O diferencial é que a troca de fase é **manual**: ao terminar o foco, o monstrengo fica *aguardando* você marcar o início da pausa. É nesse momento que entra a animação de alegria — recompensa visual por respeitar o descanso.
@@ -327,6 +329,9 @@ pomodoro-elen/
 ├── pet.py                     # lógica pura (sem Pygame)
 ├── pomodoro.py                # app Pygame (render + loop)
 ├── requirements.txt
+├── Dockerfile                 # roda em container (X11) ou com ./run.sh --local
+├── run.sh                     # script de execução (Docker ou nativo)
+├── LICENSE                    # MIT
 ├── README.md
 └── tests/
     ├── conftest.py            # adiciona a raiz ao sys.path
@@ -364,3 +369,9 @@ pytest tests/ -v
 - Persistência de energia/ciclos entre sessões.
 - Personalização do bichinho (nome, cores, acessórios).
 - Empacotamento como executável (PyInstaller).
+
+---
+
+## Licença
+
+Este projeto está licenciado sob a [MIT License](LICENSE) — você pode usar, copiar, modificar, mesclar, publicar, distribuir, sublicenciar e/ou vender cópias do software, com a única exigência de manter o aviso de copyright.
