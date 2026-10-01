@@ -108,7 +108,11 @@ def shade(color, factor):
 
 
 class _WindowDrag:
-    """Mover/sempre-no-topo para janela sem bordas (somente Windows)."""
+    """Mover/sempre-no-topo para janela sem bordas.
+
+    Suporta Windows (via Win32/ctypes) e Linux (via SDL2).
+    Em outros sistemas, as operacoes sao no-ops silenciosos.
+    """
 
     HWND_TOPMOST = -1
 
@@ -117,12 +121,21 @@ class _WindowDrag:
         self.transparent = False
         self._colorkey = 0
         self._last_alpha = None
-        if sys.platform != "win32":
-            return
+        self._platform = sys.platform
+
+        if sys.platform == "win32":
+            self._init_windows()
+        elif sys.platform.startswith("linux"):
+            self._init_linux()
+
+    # ------------------------------------------------------------------
+    # Inicializacao por plataforma
+    # ------------------------------------------------------------------
+
+    def _init_windows(self):
         try:
             import ctypes
             from ctypes import wintypes
-
             self._ctypes = ctypes
             self._wintypes = wintypes
             self._user32 = ctypes.windll.user32
@@ -130,11 +143,11 @@ class _WindowDrag:
             self.hwnd = info.get("window")
             self.ok = bool(self.hwnd)
             if self.ok:
-                self._configure()
+                self._configure_windows()
         except Exception:
             self.ok = False
 
-    def _configure(self):
+    def _configure_windows(self):
         """Define argtypes para os handles de 64 bits nao serem truncados."""
         c = self._ctypes
         w = self._wintypes
@@ -152,32 +165,95 @@ class _WindowDrag:
         u.GetCursorPos.argtypes = [c.POINTER(w.POINT)]
         u.GetWindowRect.argtypes = [w.HWND, c.POINTER(w.RECT)]
 
+    def _init_linux(self):
+        """Inicializa arrastar e sempre-no-topo via SDL2 no Linux."""
+        try:
+            import ctypes
+            import ctypes.util
+
+            sdl_name = ctypes.util.find_library("SDL2")
+            if not sdl_name:
+                return
+            self._sdl2 = ctypes.CDLL(sdl_name)
+            info = pygame.display.get_wm_info()
+            self._sdl_window = info.get("window")
+            if not self._sdl_window:
+                return
+
+            self._sdl2.SDL_SetWindowAlwaysOnTop.argtypes = [
+                ctypes.c_void_p, ctypes.c_int]
+            self._sdl2.SDL_SetWindowAlwaysOnTop.restype = None
+            self._sdl2.SDL_SetWindowPosition.argtypes = [
+                ctypes.c_void_p, ctypes.c_int, ctypes.c_int]
+            self._sdl2.SDL_SetWindowPosition.restype = None
+            self._sdl2.SDL_GetWindowPosition.argtypes = [
+                ctypes.c_void_p,
+                ctypes.POINTER(ctypes.c_int),
+                ctypes.POINTER(ctypes.c_int)]
+            self._sdl2.SDL_GetWindowPosition.restype = None
+
+            self._ctypes = ctypes
+            self.ok = True
+        except Exception:
+            self.ok = False
+
+    # ------------------------------------------------------------------
+    # Interface publica (mesma para todas as plataformas)
+    # ------------------------------------------------------------------
+
     def set_topmost(self):
         if not self.ok:
             return
-        SWP_NOSIZE, SWP_NOMOVE = 0x0001, 0x0002
-        self._user32.SetWindowPos(
-            self.hwnd, self.HWND_TOPMOST, 0, 0, 0, 0, SWP_NOSIZE | SWP_NOMOVE
-        )
+        if self._platform == "win32":
+            SWP_NOSIZE, SWP_NOMOVE = 0x0001, 0x0002
+            self._user32.SetWindowPos(
+                self.hwnd, self.HWND_TOPMOST, 0, 0, 0, 0,
+                SWP_NOSIZE | SWP_NOMOVE)
+        elif self._platform.startswith("linux"):
+            SDL_TRUE = 1
+            self._sdl2.SDL_SetWindowAlwaysOnTop(self._sdl_window, SDL_TRUE)
 
     def cursor_pos(self):
-        pt = self._wintypes.POINT()
-        self._user32.GetCursorPos(self._ctypes.byref(pt))
-        return pt.x, pt.y
+        """Posicao absoluta do cursor na tela."""
+        if not self.ok:
+            return (0, 0)
+        if self._platform == "win32":
+            pt = self._wintypes.POINT()
+            self._user32.GetCursorPos(self._ctypes.byref(pt))
+            return pt.x, pt.y
+        elif self._platform.startswith("linux"):
+            wx, wy = self.top_left()
+            mx, my = pygame.mouse.get_pos()
+            return wx + mx, wy + my
+        return (0, 0)
 
     def move_to(self, x, y):
         if not self.ok:
             return
-        self._user32.MoveWindow(self.hwnd, x, y, WIDTH, HEIGHT, True)
+        if self._platform == "win32":
+            self._user32.MoveWindow(self.hwnd, x, y, WIDTH, HEIGHT, True)
+        elif self._platform.startswith("linux"):
+            self._sdl2.SDL_SetWindowPosition(self._sdl_window, x, y)
 
     def top_left(self):
-        rect = self._wintypes.RECT()
-        self._user32.GetWindowRect(self.hwnd, self._ctypes.byref(rect))
-        return rect.left, rect.top
+        """Posicao do canto superior esquerdo da janela na tela."""
+        if not self.ok:
+            return (0, 0)
+        if self._platform == "win32":
+            rect = self._wintypes.RECT()
+            self._user32.GetWindowRect(self.hwnd, self._ctypes.byref(rect))
+            return rect.left, rect.top
+        elif self._platform.startswith("linux"):
+            c = self._ctypes
+            x, y = c.c_int(0), c.c_int(0)
+            self._sdl2.SDL_GetWindowPosition(
+                self._sdl_window, c.byref(x), c.byref(y))
+            return x.value, y.value
+        return (0, 0)
 
     def enable_transparency(self, key=MAGIC):
-        """Ativa janela em camadas com fundo transparente por cor-chave."""
-        if not self.ok:
+        """Ativa janela em camadas com fundo transparente por cor-chave (Windows only)."""
+        if not self.ok or self._platform != "win32":
             return
         GWL_EXSTYLE = -20
         WS_EX_LAYERED = 0x00080000
@@ -193,7 +269,7 @@ class _WindowDrag:
         self.transparent = True
 
     def set_alpha(self, alpha):
-        """Opacidade da janela (0-255); a cor-chave fica sempre transparente."""
+        """Opacidade da janela (0-255); a cor-chave fica sempre transparente (Windows only)."""
         if not self.ok or not self.transparent:
             return
         alpha = int(clamp(alpha, 0, 255))
@@ -212,7 +288,10 @@ class PetWindow:
         pygame.display.set_caption("Pomodoro Pet")
         self.screen = pygame.display.set_mode((WIDTH, HEIGHT), pygame.NOFRAME)
         self.clock = pygame.time.Clock()
-        self.base = BG if opaque else MAGIC
+        # No Linux a transparencia por cor-chave nao esta disponivel;
+        # usa fundo escuro (BG) como padrao, a menos que seja Windows.
+        _transparent_supported = sys.platform == "win32"
+        self.base = BG if (opaque or not _transparent_supported) else MAGIC
 
         self.pet = PomodoroPet(focus_duration=focus_duration,
                                break_duration=break_duration)
