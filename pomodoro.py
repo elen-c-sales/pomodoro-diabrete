@@ -16,9 +16,12 @@ Controles:
     ESC ................ sair
 """
 
+import array
+import io
 import math
 import os
 import sys
+import wave
 
 os.environ.setdefault("PYGAME_HIDE_SUPPORT_PROMPT", "1")
 
@@ -105,6 +108,154 @@ def energy_color(energy):
 
 def shade(color, factor):
     return tuple(int(round(c * factor)) for c in color)
+
+
+RATE = 22050
+CUE_NAMES = ("demon", "recharge", "ready")
+
+# recarga: tres notas subindo (o que ja estava audivel)
+_RECHARGE = (
+    (0.20, 349, 349, "tone", 0.28),
+    (0.06, 0, 0, "rest", 0),
+    (0.20, 440, 440, "tone", 0.30),
+    (0.06, 0, 0, "rest", 0),
+    (0.26, 554, 659, "tone", 0.32),
+)
+
+
+def _silence(dur, rate):
+    return [0.0] * int(rate * dur)
+
+
+def _segments(segments, rate):
+    out = []
+    phase = 0.0
+    for dur, f0, f1, kind, vol in segments:
+        n = max(1, int(rate * dur))
+        for i in range(n):
+            k = i / (n - 1) if n > 1 else 0.0
+            env = math.sin(math.pi * k) ** 0.85
+            phase += 2 * math.pi * (f0 + (f1 - f0) * k) / rate
+            if kind == "rest":
+                out.append(0.0)
+            else:
+                out.append(vol * env * math.sin(phase))
+    return out
+
+
+def _tom(rate, vol=0.78):
+    """Batida 'tam': tom curto caindo de tom."""
+    dur = 0.30
+    n = int(rate * dur)
+    phase = 0.0
+    out = []
+    for i in range(n):
+        t = i / rate
+        f = 220 * math.exp(-7.0 * t) + 75
+        phase += 2 * math.pi * f / rate
+        env = math.exp(-7.5 * t)
+        s = math.sin(phase) * 0.8 + math.sin(2 * phase) * 0.2
+        out.append(vol * env * s)
+    return out
+
+
+def _giggle(rate):
+    """Risadinha rouca, subindo: he-he-he-he-he."""
+    out = []
+    for i, f0 in enumerate((220, 270, 330, 400, 480)):
+        n = int(rate * 0.12)
+        phase = 0.0
+        for j in range(n):
+            k = j / n
+            env = math.sin(math.pi * k) ** 0.55
+            phase += 2 * math.pi * f0 / rate
+            s = math.tanh(2.8 * math.sin(phase)) + 0.3 * math.sin(phase * 2.4)
+            if j < int(rate * 0.018):
+                noise = ((j * 1103515245 + i * 97) % 1000) / 500.0 - 1.0
+                s = 0.5 * s + 0.5 * noise
+            out.append(0.48 * env * s)
+        out.extend(_silence(0.07, rate))
+    return out
+
+
+def _demon_cue(rate):
+    out = []
+    for _ in range(3):
+        out.extend(_tom(rate))
+        out.extend(_silence(0.14, rate))
+    out.extend(_silence(0.10, rate))
+    out.extend(_giggle(rate))
+    return out
+
+
+def _pam(freq, dur, rate, vol=0.5, decay=6.0, harmony=0.0):
+    """Nota de fanfarra, quadrada e curta, no estilo som de jogo."""
+    n = int(rate * dur)
+    phase = 0.0
+    fifth = 0.0
+    out = []
+    for i in range(n):
+        t = i / rate
+        env = math.exp(-decay * t) * (t / 0.006 if t < 0.006 else 1.0)
+        phase += 2 * math.pi * freq / rate
+        fifth += 2 * math.pi * freq * 1.5 / rate
+        sq = 1.0 if math.sin(phase) >= 0 else -1.0
+        s = 0.62 * sq + 0.38 * math.sin(phase)
+        if harmony:
+            sq5 = 1.0 if math.sin(fifth) >= 0 else -1.0
+            s = (s + harmony * sq5) / (1.0 + harmony)
+        out.append(vol * env * s)
+    return out
+
+
+def _victory_cue(rate):
+    """pam, pam-pam-pam, pam, pammmm."""
+    c, e, g, c6 = 523.25, 659.25, 783.99, 1046.5
+    parts = (
+        _pam(c, 0.22, rate, decay=7),
+        _silence(0.07, rate),
+        _pam(e, 0.12, rate, decay=11),
+        _pam(g, 0.12, rate, decay=11),
+        _pam(c6, 0.14, rate, decay=9),
+        _silence(0.06, rate),
+        _pam(g, 0.22, rate, decay=6),
+        _silence(0.05, rate),
+        _pam(c6, 0.78, rate, vol=0.58, decay=1.5, harmony=0.45),
+    )
+    out = []
+    for part in parts:
+        out.extend(part)
+    return out
+
+
+def cue_samples(name, rate=RATE):
+    if name == "demon":
+        return _demon_cue(rate)
+    if name == "ready":
+        return _victory_cue(rate)
+    if name == "recharge":
+        return _segments(_RECHARGE, rate)
+    raise KeyError(name)
+
+
+def _sound_from_samples(samples, rate=RATE):
+    pcm = array.array("h", (int(max(-1.0, min(1.0, s)) * 32000) for s in samples))
+    buf = io.BytesIO()
+    with wave.open(buf, "wb") as wf:
+        wf.setnchannels(1)
+        wf.setsampwidth(2)
+        wf.setframerate(rate)
+        wf.writeframes(pcm.tobytes())
+    return pygame.mixer.Sound(buffer=buf.getvalue())
+
+
+def load_cues():
+    try:
+        if not pygame.mixer.get_init():
+            pygame.mixer.init(RATE, -16, 1, 512)
+        return {name: _sound_from_samples(cue_samples(name)) for name in CUE_NAMES}
+    except (pygame.error, OSError):
+        return {}
 
 
 class _WindowDrag:
@@ -208,8 +359,10 @@ class _WindowDrag:
 class PetWindow:
     def __init__(self, focus_duration=25 * 60, break_duration=5 * 60,
                  opaque=False):
+        pygame.mixer.pre_init(RATE, -16, 1, 512)
         pygame.init()
         pygame.display.set_caption("Pomodoro Pet")
+        self.cues = load_cues()
         self.screen = pygame.display.set_mode((WIDTH, HEIGHT), pygame.NOFRAME)
         self.clock = pygame.time.Clock()
         self.base = BG if opaque else MAGIC
@@ -318,15 +471,28 @@ class PetWindow:
             self._pet_center()[0] - size // 2,
             self._pet_center()[1] - size // 2)
 
+    def _play(self, name):
+        sound = self.cues.get(name)
+        if sound is not None:
+            sound.play()
+
+    def _on_phase(self, event):
+        if event == FOCUS_DONE:
+            self.alert = ALERT_TIME
+            self._play("demon")
+        elif event == BREAK_STARTED:
+            self.joy = JOY_TIME
+            self._play("recharge")
+        elif event == BREAK_DONE:
+            self.alert = ALERT_TIME
+            self._play("ready")
+
     def _primary_action(self):
         """Botao unico: inicia/pausa ou marca o inicio da proxima fase."""
-        if self.pet.toggle() == BREAK_STARTED:
-            self.joy = JOY_TIME
+        self._on_phase(self.pet.toggle())
 
     def _skip(self):
-        event = self.pet.skip()
-        if event in (FOCUS_DONE, BREAK_DONE):
-            self.alert = ALERT_TIME
+        self._on_phase(self.pet.skip())
 
     # --- loop ---
     def run(self):
@@ -340,8 +506,7 @@ class PetWindow:
 
     def _update(self, dt):
         for event in self.pet.tick(dt):
-            if event in (FOCUS_DONE, BREAK_DONE):
-                self.alert = ALERT_TIME
+            self._on_phase(event)
         self.joy = max(0.0, self.joy - dt)
         self.alert = max(0.0, self.alert - dt)
 
