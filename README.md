@@ -296,6 +296,7 @@ Requisitos: Python 3.x e Pygame.
 | Novo ciclo (reset) | Botão `reset`, clique direito ou `R` |
 | Sair | Botão `sair` ou `Esc` |
 | Mover a janela | Arrastar (fora dos botões) |
+| Sons | `--sound` (padrão: **mudo**) |
 
 O botão principal muda de rótulo conforme o contexto: `iniciar foco`, `pausar`, `retomar` e `comecar pausa`. Os olhos do monstrengo acompanham o mouse.
 
@@ -317,6 +318,7 @@ Todos em `pet.py` (mecânica) e `pomodoro.py` (visual):
 | `ALPHA_IDLE` / `ALPHA_ACTIVE` | `pomodoro.py` | `120` / `240` | opacidade no repouso e no hover (0–255) |
 | `REVEAL_SPEED` / `REVEAL_THRESHOLD` | `pomodoro.py` | `6.0` / `0.4` | velocidade e limiar da transição compacto ↔ expandido |
 | `MAGIC` | `pomodoro.py` | `(255,0,255)` | cor-chave que vira transparente |
+| `--sound` | `pomodoro.py` | desligado | liga os sons das transições de fase |
 | `JOY_TIME` / `ALERT_TIME` | `pomodoro.py` | `1.8` / `1.6` | duração das animações (s) |
 | `ENERGY_STOPS` | `pomodoro.py` | 4 cores | paleta da barra e do corpo |
 

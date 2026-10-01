@@ -14,6 +14,7 @@ Controles:
     S .................. pular fase
     R .................. reset
     ESC ................ sair
+    --sound ............. ligar os sons (padrao: mudo)
 """
 
 import array
@@ -434,11 +435,11 @@ class _WindowDrag:
 
 class PetWindow:
     def __init__(self, focus_duration=25 * 60, break_duration=5 * 60,
-                 opaque=False):
+                 opaque=False, sound=False):
         pygame.mixer.pre_init(RATE, -16, 1, 512)
         pygame.init()
         pygame.display.set_caption("Pomodoro Pet")
-        self.cues = load_cues()
+        self.cues = load_cues() if sound else {}
         self.screen = pygame.display.set_mode((WIDTH, HEIGHT), pygame.NOFRAME)
         self.clock = pygame.time.Clock()
         # No Linux a transparencia por cor-chave nao esta disponivel;
@@ -954,11 +955,13 @@ def main(argv=None):
     argv = sys.argv[1:] if argv is None else argv
     demo = "--demo" in argv
     opaque = "--opaque" in argv
+    sound = "--sound" in argv
     if demo:
-        window = PetWindow(focus_duration=6, break_duration=4, opaque=opaque)
+        window = PetWindow(focus_duration=6, break_duration=4,
+                           opaque=opaque, sound=sound)
         window.pet.start()
     else:
-        window = PetWindow(opaque=opaque)
+        window = PetWindow(opaque=opaque, sound=sound)
     window.run()
 
 
