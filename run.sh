@@ -4,7 +4,8 @@
 # Uso:
 #   ./run.sh            -> Docker (padrao): build da imagem + run com X11
 #   ./run.sh --local    -> roda nativo numa venv (sem Docker)
-#   ./run.sh --demo     -> repassa flags ao app (ex.: --demo, --opaque)
+#   ./run.sh --demo     -> repassa flags ao app (ex.: --demo, --opaque, --scale=3)
+#   ./run.sh --sound    -> habilita som
 set -euo pipefail
 cd "$(dirname "$0")"
 

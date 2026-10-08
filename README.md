@@ -249,14 +249,14 @@ print(pet.mood)        # 'happy'
 
 ### Camada de renderização
 
-`pomodoro.py` contém a classe `PetWindow` (janela sem moldura de `240×168`) e um loop a `60 FPS`. Pontos principais:
+`pomodoro.py` contém a classe `PetWindow` e um loop a `60 FPS`. Tudo é desenhado num canvas lógico de `240×168` e ampliado com nearest-neighbor para o tamanho real da janela (`--scale`, padrão 2×), preservando o visual pixel art em qualquer tamanho. Pontos principais:
 
 - `_expression()` decide o que desenhar combinando alegria, recuperação e `mood`.
 - `_menace()` mede o quanto o monstrengo "demonizou" (0 a 1) a partir da energia.
 - `_sprite()` monta o monstrengo numa superfície `64×64`, que é ampliada com `pygame.transform.scale` (nearest-neighbor) para virar pixel art.
 - `_sprite_horns()`, `_sprite_tail()`, `_sprite_arms()` e `_sprite_face()`/`_sprite_mouth()` desenham o corpo e a expressão interpolando os traços por `_menace()`.
 - `_sprite_joy()`, `_sprite_sweat()` e `_sprite_zzz()` cuidam dos efeitos.
-- `_WindowDrag` usa `ctypes` para arrastar a janela e mantê-la sempre no topo (somente Windows; em outros sistemas a janela abre normalmente).
+- `_WindowDrag` usa `ctypes` para arrastar a janela e mantê-la sempre no topo (somente Windows). Nos demais sistemas a janela é comum e redimensionável — arrastar e redimensionar ficam a cargo da moldura nativa, já que o Wayland não permite ao app mover a própria janela via código.
 - `energy_color()` interpola uma paleta de quatro cores conforme a energia (vermelho demoníaco → laranja → amarelo → verde-menta).
 
 Constantes de layout e estilo ficam no topo do módulo (`WIDTH`, `COMPACT_PET`, `EXPANDED_PET`, `BTN_*`, `ENERGY_STOPS`, `ALPHA_IDLE`, `JOY_TIME`, etc.), fáceis de ajustar.
@@ -282,6 +282,12 @@ Em máquinas sem a transparência (ou para forçar a janela opaca), use `--opaqu
 python pomodoro.py --opaque
 ```
 
+Para uma janela maior ou menor, ajuste a ampliação do canvas lógico (`240×168`) com `--scale` (padrão `2`):
+
+```bash
+python pomodoro.py --scale=3
+```
+
 Requisitos: Python 3.x e Pygame.
 
 ---
@@ -295,7 +301,7 @@ Requisitos: Python 3.x e Pygame.
 | Pular fase | Botão `pular` ou `S` |
 | Novo ciclo (reset) | Botão `reset`, clique direito ou `R` |
 | Sair | Botão `sair` ou `Esc` |
-| Mover a janela | Arrastar (fora dos botões) |
+| Mover a janela | Arrastar (fora dos botões); fora do Windows, arrastar pela barra de título |
 | Sons | `--sound` (padrão: **mudo**) |
 
 O botão principal muda de rótulo conforme o contexto: `iniciar foco`, `pausar`, `retomar` e `comecar pausa`. Os olhos do monstrengo acompanham o mouse.
@@ -319,6 +325,7 @@ Todos em `pet.py` (mecânica) e `pomodoro.py` (visual):
 | `REVEAL_SPEED` / `REVEAL_THRESHOLD` | `pomodoro.py` | `6.0` / `0.4` | velocidade e limiar da transição compacto ↔ expandido |
 | `MAGIC` | `pomodoro.py` | `(255,0,255)` | cor-chave que vira transparente |
 | `--sound` | `pomodoro.py` | desligado | liga os sons das transições de fase |
+| `--scale` | CLI | `2` | ampliação nearest-neighbor do canvas lógico |
 | `JOY_TIME` / `ALERT_TIME` | `pomodoro.py` | `1.8` / `1.6` | duração das animações (s) |
 | `ENERGY_STOPS` | `pomodoro.py` | 4 cores | paleta da barra e do corpo |
 

@@ -8,13 +8,15 @@ que a pausa comecou, ele comemora (animacao de alegria) e entao se recupera.
 
 Controles:
     Clique esquerdo .... botao de acao (iniciar / pausar / comecar fase)
-    Arrastar (topo) .... mover a janela
+    Arrastar ........... mover a janela (no Windows, sem moldura; nos demais,
+                         janela comum: arrastar/redimensionar pela moldura)
     Clique direito ..... nova sessao (reset)
     ESPACO / ENTER ..... botao de acao
     S .................. pular fase
     R .................. reset
     ESC ................ sair
-    --sound ............. ligar os sons (padrao: mudo)
+
+Flags: --demo (ciclo curto), --opaque (sem transparencia), --scale=N (zoom, padrao 2), --sound (ligar os sons, padrão mudo)
 """
 
 import array
@@ -383,7 +385,12 @@ class _WindowDrag:
         if not self.ok:
             return
         if self._platform == "win32":
-            self._user32.MoveWindow(self.hwnd, x, y, WIDTH, HEIGHT, True)
+            rect = self._wintypes.RECT()
+            self._user32.GetWindowRect(self.hwnd, self._ctypes.byref(rect))
+            self._user32.MoveWindow(self.hwnd, x, y,
+                                    rect.right - rect.left,
+                                    rect.bottom - rect.top,
+                                    True)
         elif self._platform.startswith("linux"):
             self._sdl2.SDL_SetWindowPosition(self._sdl_window, x, y)
 
@@ -435,17 +442,19 @@ class _WindowDrag:
 
 class PetWindow:
     def __init__(self, focus_duration=25 * 60, break_duration=5 * 60,
-                 opaque=False, sound=False):
+                 opaque=False, sound=False, ui_scale=2.0):
         pygame.mixer.pre_init(RATE, -16, 1, 512)
         pygame.init()
         pygame.display.set_caption("Pomodoro Pet")
         self.cues = load_cues() if sound else {}
-        self.screen = pygame.display.set_mode((WIDTH, HEIGHT), pygame.NOFRAME)
+        size = (int(WIDTH * ui_scale), int(HEIGHT * ui_scale))
+        # Windows: overlay sem moldura com transparencia por cor-chave.
+        # Demais sistemas: janela comum e redimensionavel, sem transparencia
+        # (Wayland sequer permite ao app mover a propria janela via codigo).
+        flags = pygame.NOFRAME if sys.platform == "win32" else pygame.RESIZABLE
+        self.display = pygame.display.set_mode(size, flags)
+        self.screen = pygame.Surface((WIDTH, HEIGHT))  # canvas logico
         self.clock = pygame.time.Clock()
-        # No Linux a transparencia por cor-chave nao esta disponivel;
-        # usa fundo escuro (BG) como padrao, a menos que seja Windows.
-        _transparent_supported = sys.platform == "win32"
-        self.base = BG if (opaque or not _transparent_supported) else MAGIC
 
         self.pet = PomodoroPet(focus_duration=focus_duration,
                                break_duration=break_duration)
@@ -461,6 +470,7 @@ class PetWindow:
         self.drag.set_topmost()
         if not opaque:
             self.drag.enable_transparency()
+        self.base = MAGIC if self.drag.transparent else BG
 
         self.pressed = False
         self.drag_cursor = (0, 0)
@@ -508,8 +518,9 @@ class PetWindow:
         if event.button == 1:
             self.pressed = True
             self.drag_moved = False
-            self.drag_cursor = self.drag.cursor_pos()
-            self.drag_origin = self.drag.top_left()
+            if self.drag.ok:
+                self.drag_cursor = self.drag.cursor_pos()
+                self.drag_origin = self.drag.top_left()
         elif event.button == 3:
             self.pet.reset()
 
@@ -521,15 +532,16 @@ class PetWindow:
         self.drag_moved = False
         if was_drag:
             return
+        pos = self._to_logical(event.pos)
         if self.expanded:
-            if BTN_SKIP.collidepoint(event.pos):
+            if BTN_SKIP.collidepoint(pos):
                 self._skip()
-            elif BTN_RESET.collidepoint(event.pos):
+            elif BTN_RESET.collidepoint(pos):
                 self.pet.reset()
-            elif BTN_EXIT.collidepoint(event.pos):
+            elif BTN_EXIT.collidepoint(pos):
                 self.running = False
-            elif (BTN_MAIN.collidepoint(event.pos)
-                  or self._pet_rect().collidepoint(event.pos)):
+            elif (BTN_MAIN.collidepoint(pos)
+                  or self._pet_rect().collidepoint(pos)):
                 self._primary_action()
         else:
             self._primary_action()
@@ -598,7 +610,7 @@ class PetWindow:
             self.reveal = max(target, self.reveal - step)
 
         cx, cy = self._pet_center()
-        mx, my = pygame.mouse.get_pos()
+        mx, my = self._mouse()
         self.look = (clamp((mx - cx) / (WIDTH / 2), -1.0, 1.0),
                      clamp((my - cy) / (HEIGHT / 2), -1.0, 1.0))
 
@@ -629,6 +641,33 @@ class PetWindow:
         else:
             self._draw_compact(t)
         self.drag.set_alpha(lerp(ALPHA_IDLE, ALPHA_ACTIVE, self.reveal))
+        self._present()
+
+    def _view_rect(self):
+        """Retangulo (centralizado) que o canvas logico ocupa na janela."""
+        w, h = self.display.get_size()
+        factor = min(w / WIDTH, h / HEIGHT)
+        vw, vh = int(WIDTH * factor), int(HEIGHT * factor)
+        return pygame.Rect((w - vw) // 2, (h - vh) // 2, vw, vh)
+
+    def _present(self):
+        """Escala o canvas logico (nearest) para o tamanho real da janela."""
+        view = self._view_rect()
+        self.display.fill(self.base)
+        if view.width > 0 and view.height > 0:
+            self.display.blit(pygame.transform.scale(self.screen, view.size),
+                              view)
+
+    def _to_logical(self, pos):
+        """Converte coordenadas da janela para o canvas logico (WIDTHxHEIGHT)."""
+        view = self._view_rect()
+        if view.width <= 0 or view.height <= 0:
+            return 0, 0
+        return ((pos[0] - view.x) * WIDTH / view.width,
+                (pos[1] - view.y) * HEIGHT / view.height)
+
+    def _mouse(self):
+        return self._to_logical(pygame.mouse.get_pos())
 
     def _accent(self):
         return BREAK_ACCENT if self.pet.phase == BREAK else FOCUS_ACCENT
@@ -673,7 +712,7 @@ class PetWindow:
             self._draw_alert(EXPANDED_PET[0], EXPANDED_PET[1] - 58)
 
     def _button(self, rect, label, primary=False):
-        hovered = rect.collidepoint(pygame.mouse.get_pos())
+        hovered = rect.collidepoint(self._mouse())
         active = primary and (self.pet.awaiting or not self.pet.running)
         base = self._accent() if active else shade(PANEL, 1.35)
         color = mix(base, (255, 255, 255), 0.25 if hovered else 0.0)
@@ -956,12 +995,20 @@ def main(argv=None):
     demo = "--demo" in argv
     opaque = "--opaque" in argv
     sound = "--sound" in argv
+    scale = 2.0
+    for arg in argv:
+        if arg.startswith("--scale="):
+            try:
+                scale = float(arg.split("=", 1)[1])
+            except ValueError:
+                pass
+    scale = clamp(scale, 0.5, 6.0)
     if demo:
-        window = PetWindow(focus_duration=6, break_duration=4,
-                           opaque=opaque, sound=sound)
+        window = PetWindow(focus_duration=6, break_duration=4, opaque=opaque,
+                           sound=sound, ui_scale=scale)
         window.pet.start()
     else:
-        window = PetWindow(opaque=opaque, sound=sound)
+        window = PetWindow(opaque=opaque, sound=sound, ui_scale=scale)
     window.run()
 
 
