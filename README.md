@@ -284,6 +284,14 @@ python pomodoro.py --opaque
 
 Requisitos: Python 3.x e Pygame.
 
+### Windows
+
+O `run.sh` não roda no Windows. Para abrir sem terminal, dê dois cliques em `iniciar-pomodoro.bat`. Na primeira vez ele cria uma `.venv` e instala as dependências; depois abre o app direto, sem janela de console. Ele aceita as mesmas flags do app:
+
+```bat
+iniciar-pomodoro.bat --demo
+```
+
 ---
 
 ## Controles
@@ -333,6 +341,7 @@ pomodoro-elen/
 ├── requirements.txt
 ├── Dockerfile                 # roda em container (X11) ou com ./run.sh --local
 ├── run.sh                     # script de execução (Docker ou nativo)
+├── iniciar-pomodoro.bat       # atalho para Windows (cria a venv e abre o app)
 ├── LICENSE                    # MIT
 ├── README.md
 └── tests/
