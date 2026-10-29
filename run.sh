@@ -35,14 +35,19 @@ if [[ -z "${DISPLAY:-}" ]]; then
     echo "DISPLAY nao definido; use ./run.sh --local ou rode dentro de uma sessao grafica." >&2
     exit 1
 fi
-xhost +local:docker >/dev/null 2>&1 || true
+# Libera so o usuario atual (o container roda com o mesmo UID) e revoga ao
+# sair. Sem exec no docker run, senao o trap nao chega a rodar.
+XUSER="SI:localuser:$(id -un)"
+xhost "+$XUSER" >/dev/null 2>&1 || true
+trap 'xhost "-$XUSER" >/dev/null 2>&1 || true' EXIT
 
 DOCKER_ARGS=("$IMAGE")
 if (( ${#ARGS[@]} )); then
     DOCKER_ARGS+=(python pomodoro.py --opaque "${ARGS[@]}")
 fi
 
-exec docker run --rm -it \
+docker run --rm -it \
+    --user "$(id -u):$(id -g)" \
     -e DISPLAY="$DISPLAY" \
     -v /tmp/.X11-unix:/tmp/.X11-unix \
     "${DOCKER_ARGS[@]}"
