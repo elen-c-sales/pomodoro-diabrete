@@ -95,6 +95,8 @@ class PomodoroPet:
 
     def skip(self):
         """Encerra a fase atual agora, deixando o bichinho aguardando."""
+        if self.awaiting:
+            return None
         return self._finish_phase()
 
     # --- simulacao ---
